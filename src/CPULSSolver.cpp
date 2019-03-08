@@ -44,6 +44,46 @@ CPULSSolver::~CPULSSolver() {
     delete [] _FSR_source_constants;
 }
 
+/**
+ * @brief Fills an array with the scalar fluxes.
+ * @details This class method is a helper routine called by the OpenMOC
+ *          Python "openmoc.krylov" module for Krylov subspace methods.
+ *          Although this method appears to require two arguments, in
+ *          reality it only requires one due to SWIG and would be called
+ *          from within Python as follows:
+ *
+ * @code
+ *          num_fluxes = num_groups * num_FSRs
+ *          fluxes = solver.getFluxes(num_fluxes)
+ * @endcode
+ *
+ * @param fluxes an array of FSR scalar fluxes in each energy group and moment
+ * @param num_fluxes the total number of FSR flux values
+ */
+
+void CPULSolver::getFluxes(FP_PRECISION* outfluxes, int num_fluxes){
+  if(num_fluxes != _num_groups * _num_FSRS)
+    log_printf(ERROR, "Unable to get FSR scalar fluxes since there are "
+      "%d groups and %d FSRs which does not match the requested "
+      "d flux values", _num_groups, _num_FSRs, num_fluxes);
+
+  else if (_scalar_flux_xyz == NULL)
+    log_printf(ERROR, "Unable to get FSR scalar fluxes since they"
+      "have not yet been allocated");
+    /*If the user called setFluxes(...) they already have the flux */
+  if(_user_fluxes && _scalar_flux_xyz == out_fluxes)
+    return;
+  /*Otherwise, copy the fluxes into the input array*/
+  else{
+#pragma omp parallel for schedule(guided)
+    for(int r=0; r < _num_FSRs; r++){
+      for(int e=0; e< _num_groups; e++)
+        for(int p = 0; p <3; x++)
+          out_fluxes[r*_num_groups+e] = _scalar_flux_xyz(r,e,p);
+    }
+  }
+
+/**
 
 /**
  * @brief Allocates memory for boundary and scalar fluxes.
@@ -124,10 +164,10 @@ void CPULSSolver::initializeSourceArrays() {
 
 
 /**
- * @brief Initializes the FSR constant linear source component, volumes and 
+ * @brief Initializes the FSR constant linear source component, volumes and
  *        Materials array.
  * @details This method calls parent class CPUSolver's initalizeFSRs to allocate
- *          and initialize an array of OpenMP mutual exclusion locks for each 
+ *          and initialize an array of OpenMP mutual exclusion locks for each
  *          FSR for use in the transport sweep algorithm.
  */
 void CPULSSolver::initializeFSRs() {
@@ -387,9 +427,9 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
     }
 
     // Compute the sources
-    FP_PRECISION src_flat[_num_groups] 
+    FP_PRECISION src_flat[_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
-    FP_PRECISION src_linear[_num_groups] 
+    FP_PRECISION src_linear[_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(src_flat, src_linear)
@@ -431,7 +471,7 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
       center[i] = 2 * position[i] + length * direction[i];
 
     /* Compute tau in advance to simplify attenation loop */
-    FP_PRECISION tau[_num_groups * num_polar_2] 
+    FP_PRECISION tau[_num_groups * num_polar_2]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(tau)
@@ -439,21 +479,21 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
       tau[pe] = sigma_t[pe % _num_groups] * length;
 
     /* Compute exponentials */
-    FP_PRECISION exp_F1[num_polar_2*_num_groups] 
+    FP_PRECISION exp_F1[num_polar_2*_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
-    FP_PRECISION exp_F2[num_polar_2*_num_groups] 
+    FP_PRECISION exp_F2[num_polar_2*_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
-    FP_PRECISION exp_H[num_polar_2*_num_groups] 
+    FP_PRECISION exp_H[num_polar_2*_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(tau, exp_F1, exp_F2, exp_H)
     for (int pe=0; pe < num_polar_2 * _num_groups; pe++)
-      exp_evaluator->retrieveExponentialComponents(tau[pe], int(pe/_num_groups), 
+      exp_evaluator->retrieveExponentialComponents(tau[pe], int(pe/_num_groups),
                                                    &exp_F1[pe], &exp_F2[pe],
                                                    &exp_H[pe]);
 
     /* Compute flat part of the source */
-    FP_PRECISION src_flat[_num_groups] 
+    FP_PRECISION src_flat[_num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(src_flat)
@@ -464,12 +504,12 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
     }
 
     /* Compute linear part of the source */
-    FP_PRECISION src_linear[num_polar_2 * _num_groups] 
+    FP_PRECISION src_linear[num_polar_2 * _num_groups]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(src_linear)
     for (int pe=0; pe < num_polar_2 * _num_groups; pe++) {
-      FP_PRECISION sin_the = _quad->getSinThetaInline(azim_index, 
+      FP_PRECISION sin_the = _quad->getSinThetaInline(azim_index,
                                                       int(pe/_num_groups));
       src_linear[pe] = direction[0] * sin_the *
             _reduced_sources_xyz(fsr_id, pe % _num_groups, 0);
@@ -478,7 +518,7 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
     }
 
     /* Compute attenuation of track angular flux */
-    FP_PRECISION delta_psi[_num_groups * num_polar_2] 
+    FP_PRECISION delta_psi[_num_groups * num_polar_2]
                  __attribute__ ((aligned(VEC_ALIGNMENT)));
 
 #pragma omp simd aligned(tau, src_flat, src_linear, delta_psi, exp_F1, exp_F2, exp_H)
@@ -489,7 +529,7 @@ void CPULSSolver::tallyLSScalarFlux(segment* curr_segment, int azim_index,
 
       // Compute the change in flux across the segment
       delta_psi[pe] = (tau[pe] * track_flux[pe] - length
-            * src_flat[pe % _num_groups]) * exp_F1[pe] - length * length 
+            * src_flat[pe % _num_groups]) * exp_F1[pe] - length * length
             * src_linear[pe] * exp_F2[pe];
       track_flux[pe] -= delta_psi[pe];
       delta_psi[pe] *= wgt;
@@ -627,7 +667,7 @@ void CPULSSolver::computeStabilizingFlux() {
   /* Compute flat stabilizing flux */
   CPUSolver::computeStabilizingFlux();
 
-  /* Check whether moment stabilization is requested */ 
+  /* Check whether moment stabilization is requested */
   if (!_stabilize_moments)
     return;
 
@@ -647,11 +687,11 @@ void CPULSSolver::computeStabilizingFlux() {
         /* Extract the in-scattering (diagonal) element */
         FP_PRECISION sigma_s = scattering_matrix[e*_num_groups+e];
 
-        /* For negative cross-sections, add the absolute value of the 
+        /* For negative cross-sections, add the absolute value of the
            in-scattering rate to the stabilizing flux */
         if (sigma_s < 0.0) {
           for (int i=0; i < 3; i++) {
-            _stabilizing_flux_xyz(r, e, i) = -_scalar_flux_xyz(r,e,i) * 
+            _stabilizing_flux_xyz(r, e, i) = -_scalar_flux_xyz(r,e,i) *
                 _stabilization_factor * sigma_s / sigma_t[e];
           }
         }
@@ -692,7 +732,7 @@ void CPULSSolver::computeStabilizingFlux() {
     /* Get the multiplicative factor */
     FP_PRECISION mult_factor = 1.0 / _stabilization_factor - 1.0;
 
-    /* Apply the global multiplicative factor */ 
+    /* Apply the global multiplicative factor */
 #pragma omp parallel for
     for (long r=0; r < _num_FSRs; r++)
       for (int e=0; e < _num_groups; e++)
@@ -711,7 +751,7 @@ void CPULSSolver::stabilizeFlux() {
   /* Stabalize the flat scalar flux */
   CPUSolver::stabilizeFlux();
 
-  /* Check whether moment stabilization is requested */ 
+  /* Check whether moment stabilization is requested */
   if (!_stabilize_moments)
     return;
 
@@ -866,7 +906,7 @@ FP_PRECISION CPULSSolver::getFluxByCoords(LocalCoords* coords, int group) {
 
 /**
  * @brief Initializes a Cmfd object for acceleration prior to source iteration.
- * @details For the linear source solver, a pointer to the flux moments is 
+ * @details For the linear source solver, a pointer to the flux moments is
  *          passed to the Cmfd object so that they can be updated as well in
  *          the prolongation phase.
  */
@@ -929,7 +969,7 @@ void CPULSSolver::initializeLinearSourceConstants() {
 
 
 /**
- * @brief Returns a memory buffer to the linear source expansion coefficent 
+ * @brief Returns a memory buffer to the linear source expansion coefficent
  *        matrix.
  * @return _FSR_lin_exp_matrix a pointer to the linear source coefficient matrix
  */
@@ -940,7 +980,7 @@ double* CPULSSolver::getLinearExpansionCoeffsBuffer() {
 
 
 /**
- * @brief Returns a memory buffer to the constant part (constant between MOC 
+ * @brief Returns a memory buffer to the constant part (constant between MOC
  *        iterations) of the linear source.
  * @return _FSR_source_constants a pointer to the linear source constant part
  */
